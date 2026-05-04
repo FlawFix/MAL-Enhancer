@@ -1,29 +1,9 @@
 // ── Shared Constants ────────────────────────────────────────────────
-const MS_PER_DAY = 1000 * 60 * 60 * 24;
 const MAL_ANIMELIST_URL_PREFIX = "https://myanimelist.net/animelist/";
 const REPORT_FILENAME = "mal-gap-report.md";
 const RATING_INPUT_IDS = ["rStory", "rCharacter", "rAnimation", "rSound", "rEnjoyment"];
 
-// ── Date Parsing & Formatting ───────────────────────────────────────
-
-function parseDate(dateStr) {
-  if (!dateStr || dateStr.trim() === "-" || dateStr.trim() === "") {
-    return null;
-  }
-
-  const value = dateStr.trim();
-  const legacyMatch = value.match(/^(\d{1,2})-(\d{1,2})-(\d{2})$/);
-
-  if (legacyMatch) {
-    const [, day, month, year] = legacyMatch;
-    const shortYear = parseInt(year, 10);
-    const fullYear = shortYear < 50 ? 2000 + shortYear : 1900 + shortYear;
-    return new Date(fullYear, parseInt(month, 10) - 1, parseInt(day, 10));
-  }
-
-  const parsedValue = Date.parse(value);
-  return Number.isNaN(parsedValue) ? null : new Date(parsedValue);
-}
+// ── Date Formatting ─────────────────────────────────────────────────
 
 function formatDate(date) {
   if (!date) {
@@ -37,22 +17,14 @@ function formatDate(date) {
   });
 }
 
-function calculateGapDays(previousFinishedDate, nextStartedDate) {
-  if (!previousFinishedDate || !nextStartedDate) {
-    return 0;
-  }
-
-  return Math.max(Math.round((nextStartedDate - previousFinishedDate) / MS_PER_DAY) - 1, 0);
-}
-
 // ── Gap Detection ───────────────────────────────────────────────────
 
 function detectGaps(data) {
   const sortedEntries = data
     .map((item) => ({
       ...item,
-      startedDate: parseDate(item.started),
-      finishedDate: parseDate(item.finished)
+      startedDate: window.MalGapUtils.parseDate(item.started),
+      finishedDate: window.MalGapUtils.parseDate(item.finished)
     }))
     .filter((item) => item.finishedDate !== null)
     .sort((a, b) => a.finishedDate - b.finishedDate);
@@ -63,7 +35,7 @@ function detectGaps(data) {
     return {
       current,
       next,
-      gap: calculateGapDays(current.finishedDate, next.startedDate)
+      gap: window.MalGapUtils.calculateGapDays(current.finishedDate, next.startedDate)
     };
   });
 }
@@ -84,57 +56,6 @@ function generateMarkdown(gaps) {
   return lines.join("\n");
 }
 
-// ── MAL Page Scraping ───────────────────────────────────────────────
-
-function scrapeAnimelist() {
-  const data = [];
-
-  function addEntry(title, started, finished) {
-    if (title && finished && finished !== "-") {
-      data.push({ title, started, finished });
-    }
-  }
-
-  function collectRows(rows, extractRow) {
-    rows.forEach((row) => {
-      const entry = extractRow(row);
-      if (entry) {
-        addEntry(entry.title, entry.started, entry.finished);
-      }
-    });
-  }
-
-  collectRows(
-    document.querySelectorAll(".list-table-data .list-table-row, .list-table-data"),
-    (row) => {
-      const title = row.querySelector(".title .link, .title a")?.innerText?.trim();
-      const started = row.querySelector(".data.started, td.started")?.innerText?.trim();
-      const finished = row.querySelector(".data.finished, td.finished")?.innerText?.trim();
-
-      return title ? { title, started, finished } : null;
-    }
-  );
-
-  if (data.length === 0) {
-    collectRows(
-      document.querySelectorAll("table.list-table tbody tr, #list-container .list-item"),
-      (row) => {
-        const cols = row.querySelectorAll("td");
-        if (cols.length < 8) {
-          return null;
-        }
-
-        return {
-          title: cols[1]?.innerText?.trim(),
-          started: cols[6]?.innerText?.trim(),
-          finished: cols[7]?.innerText?.trim()
-        };
-      }
-    );
-  }
-
-  return data;
-}
 
 // ── DOM References & Local State ────────────────────────────────────
 
@@ -287,7 +208,7 @@ function isMalAnimelistTab(tab) {
 async function scrapeActiveTab(tabId) {
   const results = await chrome.scripting.executeScript({
     target: { tabId },
-    func: scrapeAnimelist
+    func: () => window.MalGapScraper.scrapeAnimelist()
   });
 
   return results?.[0]?.result ?? [];

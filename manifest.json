@@ -24,13 +24,10 @@
   "host_permissions": [
     "https://myanimelist.net/*"
   ],
-  "background": {
-    "service_worker": "background.js"
-  },
   "content_scripts": [
     {
       "matches": ["https://myanimelist.net/*"],
-      "js": ["content.js"],
+      "js": ["utils.js", "scraper.js", "content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
     }

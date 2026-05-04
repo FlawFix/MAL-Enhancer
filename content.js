@@ -97,61 +97,7 @@
     return group;
   }
 
-  // Evaluators
-  function getRowScore(row) {
-    const scoreElem = row.querySelector(".data.score, td.score, .score-label, .score .link");
-    if (!scoreElem) return 0;
-    const text = (scoreElem.textContent || "").trim();
-    if (text === "-" || text === "N/A" || text === "") return 0;
-    const parsed = parseInt(text, 10);
-    return Number.isNaN(parsed) ? 0 : parsed;
-  }
-
-  function parseDateSnippet(dateStr) {
-    if (!dateStr || dateStr === "-" || dateStr === "N/A" || dateStr === "") return null;
-    const value = dateStr.trim();
-    const legacyMatch = value.match(/^(\d{1,2})-(\d{1,2})-(\d{2})$/);
-    if (legacyMatch) {
-      const [, day, month, year] = legacyMatch;
-      const shortYear = parseInt(year, 10);
-      const fullYear = shortYear < 50 ? 2000 + shortYear : 1900 + shortYear;
-      return new Date(fullYear, parseInt(month, 10) - 1, parseInt(day, 10));
-    }
-    const parsedValue = Date.parse(value);
-    return Number.isNaN(parsedValue) ? null : new Date(parsedValue);
-  }
-
-  function getRowDaysToComplete(row) {
-    const startedElem = row.querySelector(".data.started, td.started");
-    const finishedElem = row.querySelector(".data.finished, td.finished");
-    if (!startedElem || !finishedElem) return -1;
-    const start = parseDateSnippet(startedElem.textContent);
-    const finish = parseDateSnippet(finishedElem.textContent);
-    if (!start || !finish) return -1;
-    const MS_PER_DAY = 1000 * 60 * 60 * 24;
-    return Math.max(Math.round((finish - start) / MS_PER_DAY), 0);
-  }
-
-  function getRowRewatched(movable) {
-    let moreInfoNode = null;
-    if (movable.tagName === 'TBODY') {
-      moreInfoNode = movable.querySelector('.more-info, [id^="more-"]');
-    } else {
-      let next = movable.nextElementSibling;
-      while (next && !next.classList.contains('list-table-data')) {
-        if (next.classList.contains('more-info') || (next.id && next.id.startsWith('more-'))) {
-          moreInfoNode = next;
-          break;
-        }
-        next = next.nextElementSibling;
-      }
-    }
-    if (!moreInfoNode) return 0;
-
-    const textMatch = moreInfoNode.textContent.match(/re-watched\s+(\d+)\s+times?/i);
-    if (textMatch) return parseInt(textMatch[1], 10);
-    return 0;
-  }
+  // Evaluators extracted to scraper.js
 
   // ── MutationObserver (declared early so rewatch preloading can pause it) ──
 
@@ -176,8 +122,6 @@
   let rewatchDataLoaded = false;
   let rewatchDataLoading = false;
   let rewatchLoadCancelled = false;
-
-  const POLL_INTERVAL_MS = 500;
 
   function createProgressIndicator() {
     let indicator = document.getElementById('mal-gap-rewatch-progress');
@@ -219,6 +163,12 @@
     });
     cancelBtn.addEventListener('click', () => {
       rewatchLoadCancelled = true;
+      cancelBtn.textContent = 'Stopping...';
+      cancelBtn.style.color = '#888';
+      cancelBtn.style.borderColor = '#555';
+      cancelBtn.style.background = 'rgba(100, 100, 100, 0.2)';
+      cancelBtn.disabled = true;
+      cancelBtn.style.cursor = 'not-allowed';
     });
     indicator.appendChild(cancelBtn);
 
@@ -299,17 +249,29 @@
 
     await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
 
-    for (let i = 0; i < unloaded.length; i++) {
-      unloaded[i].click();
+    // Trigger ALL unloaded links in asynchronous chunks to prevent UI freeze
+    const CHUNK_SIZE = 50;
+    for (let i = 0; i < unloaded.length; i += CHUNK_SIZE) {
+      if (rewatchLoadCancelled) break;
+      
+      const chunkEnd = Math.min(i + CHUNK_SIZE, unloaded.length);
+      for (let j = i; j < chunkEnd; j++) {
+        unloaded[j].click();
+      }
+      
+      setProgressText(`Triggering data… (${chunkEnd}/${total})`);
+      // Yield to the browser so it can process network queues and button clicks
+      await new Promise(r => setTimeout(r, 15));
     }
 
-    // Connect to background service worker for un-throttled timing
-    const port = chrome.runtime.connect({ name: "rewatch-timer" });
-
+    // Poll to check when all entries have finished loading
     await new Promise((resolve) => {
-      port.onMessage.addListener((msg) => {
-        if (msg.action !== "tick") return;
-        if (rewatchLoadCancelled) { resolve(); return; }
+      const intervalId = setInterval(() => {
+        if (rewatchLoadCancelled) {
+          clearInterval(intervalId);
+          resolve();
+          return;
+        }
 
         let loadedCount = 0;
         for (let i = 0; i < unloaded.length; i++) {
@@ -321,20 +283,17 @@
         setProgressText(`Loading rewatch data… (${loadedCount}/${total})`);
 
         if (loadedCount === total) {
+          clearInterval(intervalId);
           // All loaded — click again to collapse the opened sections
           for (let i = 0; i < unloaded.length; i++) {
             unloaded[i].click();
           }
           resolve();
         }
-      });
-
-      port.postMessage({ action: "start", intervalMs: POLL_INTERVAL_MS });
+      }, 500);
     });
 
     // Cleanup
-    port.postMessage({ action: "stop" });
-    port.disconnect();
     reconnectObserver();
 
     if (rewatchLoadCancelled) {
@@ -369,9 +328,9 @@
     const sortable = rows.map(row => ({
       movable: row,
       group: getGrouping(row),
-      score: getRowScore(row),
-      days: getRowDaysToComplete(row),
-      rewatched: getRowRewatched(row)
+      score: window.MalGapScraper.getRowScore(row),
+      days: window.MalGapScraper.getRowDaysToComplete(row),
+      rewatched: window.MalGapScraper.getRowRewatched(row)
     }));
 
     // Cache original order if not done already
