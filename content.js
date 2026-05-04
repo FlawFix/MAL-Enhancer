@@ -1,11 +1,6 @@
-/* ── MAL Gap Detector – Floating Scroll Buttons ─────────────────────
-   Injected automatically on myanimelist.net pages via content_scripts.
-   Creates two circular floating buttons (↑ and ↓) in the bottom-right
-   corner for quick page navigation.
-──────────────────────────────────────────────────────────────────── */
+// ── Floating Scroll Buttons ───────────
 
 (function () {
-  // Guard against double-injection
   if (document.getElementById("mal-gap-scroll-btns")) return;
 
   const container = document.createElement("div");
@@ -153,7 +148,7 @@
     }
     if (!moreInfoNode) return 0;
 
-    const textMatch = moreInfoNode.textContent.match(/re-watched\s+(\d+)\s+times/i);
+    const textMatch = moreInfoNode.textContent.match(/re-watched\s+(\d+)\s+times?/i);
     if (textMatch) return parseInt(textMatch[1], 10);
     return 0;
   }
@@ -176,10 +171,13 @@
     }
   });
 
-  // ── Rewatch Data Preloading ──────────────────────────────────────
+  // ── Rewatch Data Preloading (click-based, safe for background tabs) ──
 
   let rewatchDataLoaded = false;
   let rewatchDataLoading = false;
+  let rewatchLoadCancelled = false;
+
+  const POLL_INTERVAL_MS = 500;
 
   function createProgressIndicator() {
     let indicator = document.getElementById('mal-gap-rewatch-progress');
@@ -196,9 +194,41 @@
       box-shadow: 0 4px 20px rgba(0,0,0,0.4), 0 0 12px rgba(0,229,255,0.15);
       border: 1px solid rgba(0,229,255,0.25);
       backdrop-filter: blur(8px); transition: opacity 0.3s ease;
+      display: flex; align-items: center; gap: 12px;
     `;
+
+    const textSpan = document.createElement('span');
+    textSpan.id = 'mal-gap-rewatch-progress-text';
+    indicator.appendChild(textSpan);
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.id = 'mal-gap-rewatch-cancel';
+    cancelBtn.textContent = '✕ Stop';
+    cancelBtn.style.cssText = `
+      background: rgba(255, 82, 82, 0.2); color: #ff5252;
+      border: 1px solid rgba(255, 82, 82, 0.4); border-radius: 4px;
+      padding: 3px 10px; font-size: 12px; font-weight: 600;
+      cursor: pointer; transition: all 0.2s ease;
+      font-family: inherit; letter-spacing: 0.3px;
+    `;
+    cancelBtn.addEventListener('mouseenter', () => {
+      cancelBtn.style.background = 'rgba(255, 82, 82, 0.35)';
+    });
+    cancelBtn.addEventListener('mouseleave', () => {
+      cancelBtn.style.background = 'rgba(255, 82, 82, 0.2)';
+    });
+    cancelBtn.addEventListener('click', () => {
+      rewatchLoadCancelled = true;
+    });
+    indicator.appendChild(cancelBtn);
+
     document.body.appendChild(indicator);
     return indicator;
+  }
+
+  function setProgressText(text) {
+    const el = document.getElementById('mal-gap-rewatch-progress-text');
+    if (el) el.textContent = text;
   }
 
   function removeProgressIndicator() {
@@ -209,127 +239,115 @@
     }
   }
 
-  function waitForMoreContent(moreInfoRow, timeoutMs = 5000) {
-    return new Promise((resolve) => {
-      const contentCell = moreInfoRow.querySelector('.more-content, td');
-      if (contentCell && contentCell.textContent.trim().length > 10) {
-        resolve(true);
-        return;
-      }
-
-      const startTime = Date.now();
-      const check = setInterval(() => {
-        const cell = moreInfoRow.querySelector('.more-content, td');
-        if (cell && cell.textContent.trim().length > 10) {
-          clearInterval(check);
-          resolve(true);
-        } else if (Date.now() - startTime > timeoutMs) {
-          clearInterval(check);
-          resolve(false);
-        }
-      }, 100);
-    });
-  }
-
-  async function loadAllRewatchData() {
-    if (rewatchDataLoaded || rewatchDataLoading) return;
-    rewatchDataLoading = true;
-
-    // Pause the MutationObserver during loading to prevent re-entrant filter calls
-    observer.disconnect();
-
-    // Find all "More" links — they sit inside <span class="more"> next to the anime title
-    const actualMoreLinks = [];
+  // Find all "More" links on the page
+  function findAllMoreLinks() {
+    const links = [];
     document.querySelectorAll('.list-table-data .more a, .list-table-data a').forEach(link => {
-      const text = link.textContent.trim();
-      if (text === 'More') {
-        actualMoreLinks.push(link);
-      }
+      if (link.textContent.trim() === 'More') links.push(link);
     });
-
-    // Broader fallback for other list layouts
-    if (actualMoreLinks.length === 0) {
+    if (links.length === 0) {
       document.querySelectorAll('#list-container a, .list-block a').forEach(link => {
-        const text = link.textContent.trim();
-        if (text === 'More') {
-          actualMoreLinks.push(link);
-        }
+        if (link.textContent.trim() === 'More') links.push(link);
       });
     }
-
-    if (actualMoreLinks.length === 0) {
-      rewatchDataLoaded = true;
-      rewatchDataLoading = false;
-      reconnectObserver();
-      return;
-    }
-
-    // Filter to only entries whose more-info content hasn't loaded yet
-    const unloadedLinks = actualMoreLinks.filter(link => {
-      const row = link.closest('tr, .list-table-data');
-      if (!row) return true;
-      const moreInfoRow = findMoreInfoRow(row);
-      if (!moreInfoRow) return true;
-      const content = moreInfoRow.querySelector('.more-content, td');
-      return !content || content.textContent.trim().length < 10;
-    });
-
-    if (unloadedLinks.length === 0) {
-      rewatchDataLoaded = true;
-      rewatchDataLoading = false;
-      reconnectObserver();
-      return;
-    }
-
-    const indicator = createProgressIndicator();
-    const total = unloadedLinks.length;
-
-    for (let i = 0; i < unloadedLinks.length; i++) {
-      indicator.textContent = `Loading rewatch data… (${i + 1}/${total})`;
-
-      const link = unloadedLinks[i];
-
-      // Click to open — triggers AJAX load
-      link.click();
-
-      // Wait for the AJAX content to populate
-      const row = link.closest('tr, .list-table-data');
-      if (row) {
-        const moreInfoRow = findMoreInfoRow(row);
-        if (moreInfoRow) {
-          await waitForMoreContent(moreInfoRow);
-          // Click again to collapse — data stays in DOM but row is hidden
-          link.click();
-        }
-      }
-
-      // Small delay to avoid overwhelming the server
-      if (i < unloadedLinks.length - 1) {
-        await new Promise(r => setTimeout(r, 80));
-      }
-    }
-
-    indicator.textContent = 'Rewatch data loaded ✓';
-    setTimeout(() => removeProgressIndicator(), 1200);
-
-    rewatchDataLoaded = true;
-    rewatchDataLoading = false;
-    reconnectObserver();
+    return links;
   }
 
-  // Helper: find the more-info row adjacent to a given entry row
-  function findMoreInfoRow(row) {
+  // Check if a "More" link's corresponding more-info row has loaded content
+  function isMoreInfoLoaded(moreLink) {
+    const row = moreLink.closest('tr, .list-table-data');
+    if (!row) return false;
     if (row.tagName === 'TR') {
       let next = row.nextElementSibling;
       while (next) {
         if (next.classList.contains('more-info') || (next.id && next.id.startsWith('more-'))) {
-          return next;
+          const content = next.querySelector('.more-content, td');
+          return content && content.textContent.trim().length > 10;
         }
         if (next.classList.contains('list-table-data')) break;
         next = next.nextElementSibling;
       }
     }
-    return null;
+    return false;
+  }
+
+  async function loadAllRewatchData() {
+    if (rewatchDataLoaded || rewatchDataLoading) return;
+    rewatchDataLoading = true;
+    rewatchLoadCancelled = false;
+
+    // Pause MutationObserver during loading to prevent re-entrant calls
+    observer.disconnect();
+    const indicator = createProgressIndicator();
+    setProgressText(`Preparing to load data...`);
+
+    await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+
+    const allMoreLinks = findAllMoreLinks();
+    const unloaded = allMoreLinks.filter(link => !isMoreInfoLoaded(link));
+
+    if (unloaded.length === 0) {
+      rewatchDataLoaded = true;
+      rewatchDataLoading = false;
+      removeProgressIndicator();
+      reconnectObserver();
+      return;
+    }
+
+    const total = unloaded.length;
+    setProgressText(`Loading rewatch data… (0/${total})`);
+
+    await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+
+    for (let i = 0; i < unloaded.length; i++) {
+      unloaded[i].click();
+    }
+
+    // Connect to background service worker for un-throttled timing
+    const port = chrome.runtime.connect({ name: "rewatch-timer" });
+
+    await new Promise((resolve) => {
+      port.onMessage.addListener((msg) => {
+        if (msg.action !== "tick") return;
+        if (rewatchLoadCancelled) { resolve(); return; }
+
+        let loadedCount = 0;
+        for (let i = 0; i < unloaded.length; i++) {
+          if (isMoreInfoLoaded(unloaded[i])) {
+            loadedCount++;
+          }
+        }
+
+        setProgressText(`Loading rewatch data… (${loadedCount}/${total})`);
+
+        if (loadedCount === total) {
+          // All loaded — click again to collapse the opened sections
+          for (let i = 0; i < unloaded.length; i++) {
+            unloaded[i].click();
+          }
+          resolve();
+        }
+      });
+
+      port.postMessage({ action: "start", intervalMs: POLL_INTERVAL_MS });
+    });
+
+    // Cleanup
+    port.postMessage({ action: "stop" });
+    port.disconnect();
+    reconnectObserver();
+
+    if (rewatchLoadCancelled) {
+      setProgressText('Loading cancelled — partial data available');
+      setTimeout(() => removeProgressIndicator(), 1500);
+      rewatchDataLoaded = true;
+    } else {
+      setProgressText('Rewatch data loaded ✓');
+      setTimeout(() => removeProgressIndicator(), 1200);
+      rewatchDataLoaded = true;
+    }
+
+    rewatchDataLoading = false;
   }
 
   // Helper: reconnect the MutationObserver after loading completes
@@ -388,7 +406,7 @@
     let visibleCount = 0;
     sortable.forEach(({ group, score, rewatched }) => {
       const scoreMatch = activeScoreFilter === null || score === activeScoreFilter;
-      const rewatchedMatch = activeRewatchedFilter === null || rewatched === activeRewatchedFilter;
+      const rewatchedMatch = activeRewatchedFilter === null || rewatched >= activeRewatchedFilter;
       const isVisible = scoreMatch && rewatchedMatch;
       group.forEach(node => { node.style.display = isVisible ? "" : "none"; });
       
@@ -406,7 +424,6 @@
     if (isUpdating) return;
     isUpdating = true;
     try {
-      // If rewatched filter is active, preload all rewatch data first
       if (activeRewatchedFilter !== null && !rewatchDataLoaded) {
         await loadAllRewatchData();
       }
@@ -430,11 +447,10 @@
         activeSortOrder = null;
       }
 
-      // Use async flow — sendResponse kept alive with return true
       applyLiveControls().then(() => {
         sendResponse({ status: "ok" });
       });
-      return true; // Keep message channel open for async response
+      return true;
     }
   });
 
