@@ -65,36 +65,32 @@
 
   <pre id="output"></pre>
 
-  <!-- ── Live Page Filters ─────────────────────────────── -->
-  <div id="filter-divider" class="section-divider"></div>
-  <h2 id="filter-heading" class="section-heading">Page Filters</h2>
+  <!-- ── Filter & Sort ────────────────────────────── -->
+  <div id="filter-sort-divider" class="section-divider"></div>
+  <h2 id="filter-sort-heading" class="section-heading">Filter & Sort</h2>
 
-  <div id="live-filters">
-    <div class="control-row">
-      <label for="pageScore">Score (0 = unrated, blank = all)</label>
-      <input type="number" id="pageScore" min="0" max="10" step="1" placeholder="All">
+  <div id="filter-sort">
+    <div class="controls-grid">
+      <div class="control-grid-item">
+        <label for="pageScore">Filter: Score</label>
+        <input type="number" id="pageScore" min="0" max="10" step="1" placeholder="All">
+      </div>
+      <div class="control-grid-item">
+        <label for="Rewatched">Filter: Rewatched</label>
+        <input type="number" id="Rewatched" min="0" step="1" placeholder="All">
+      </div>
     </div>
-    <div class="filter-actions-row">
-      <button id="applyScoreFilter" class="btn-accent">Apply</button>
-      <button id="clearScoreFilter" class="btn-outline">Clear</button>
-    </div>
-  </div>
-
-  <!-- ── Live Page Sorting ─────────────────────────────── -->
-  <div id="sort-divider" class="section-divider"></div>
-  <h2 id="sort-heading" class="section-heading">Page Sorting</h2>
-
-  <div id="live-sorting">
-    <div class="control-row">
-      <label for="pageSortOrder">Days to Complete</label>
-      <select id="pageSortOrder">
+    <div class="control-grid-item">
+      <label for="SortOrder">Sort: Days To Complete</label>
+      <select id="SortOrder">
+        <option value="" disabled selected>Select...</option>
         <option value="desc">Longest first</option>
-        <option value="asc">Fastest first</option>
+        <option value="asc">Shortest first</option>
       </select>
     </div>
     <div class="filter-actions-row">
-      <button id="applyDaysSort" class="btn-accent">Apply</button>
-      <button id="clearDaysSort" class="btn-outline">Clear</button>
+      <button id="applyLiveControls" class="btn-accent">Apply</button>
+      <button id="clearLiveControls" class="btn-outline">Clear</button>
     </div>
   </div>
 

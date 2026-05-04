@@ -154,11 +154,10 @@ const elements = {
   largestGap: $("#largestGap"),
   avgGap: $("#avgGap"),
   pageScoreInput: $("#pageScore"),
-  applyScoreBtn: $("#applyScoreFilter"),
-  clearScoreBtn: $("#clearScoreFilter"),
-  pageSortOrder: $("#pageSortOrder"),
-  applyDaysSortBtn: $("#applyDaysSort"),
-  clearDaysSortBtn: $("#clearDaysSort"),
+  SortOrder: $("#SortOrder"),
+  RewatchedInput: $("#Rewatched"),
+  applyLiveControlsBtn: $("#applyLiveControls"),
+  clearLiveControlsBtn: $("#clearLiveControls"),
   calcBtn: $("#calcRating"),
   ratingResult: $("#rating-result"),
   ratingValue: $("#ratingValue"),
@@ -454,54 +453,59 @@ function applyPreset(preset) {
   }
 }
 
-// ── Live Page Filters ───────────────────────────────────────────────
+// ── Live Page Controls ──────────────────────────────────────────────
 
-async function applyLiveScoreFilter() {
-  const rawValue = elements.pageScoreInput.value;
-  if (rawValue === "") {
-    clearLiveScoreFilter();
-    return;
+async function applyLiveControls() {
+  const scoreRaw = elements.pageScoreInput.value;
+  let score = null;
+  if (scoreRaw !== "") {
+    score = Math.max(0, Math.min(10, parseInt(scoreRaw, 10)));
+    elements.pageScoreInput.value = score;
   }
 
-  const score = Math.max(0, Math.min(10, parseInt(rawValue, 10)));
-  elements.pageScoreInput.value = score; 
+  const rewatchedRaw = elements.RewatchedInput.value;
+  let rewatchedFilter = null;
+  if (rewatchedRaw !== "") {
+    rewatchedFilter = Math.max(0, parseInt(rewatchedRaw, 10));
+    elements.RewatchedInput.value = rewatchedFilter;
+  }
+
+  const daysOrder = elements.SortOrder.value;
 
   const tab = await getActiveTab();
   if (tab && isMalAnimelistTab(tab)) {
-    chrome.tabs.sendMessage(tab.id, { action: "filterScore", score });
-    setStatus(`Live page filtered to score: ${score === 0 ? 'Unrated' : score}`, "success");
+    chrome.tabs.sendMessage(tab.id, {
+      action: "applyLiveControls",
+      score,
+      rewatchedFilter,
+      daysOrder: daysOrder || null
+    });
+
+    let msg = [];
+    if (score !== null) msg.push(`Score: ${score === 0 ? 'Unrated' : score}`);
+    if (rewatchedFilter !== null) msg.push(`Rewatched: ${rewatchedFilter}`);
+    if (daysOrder) msg.push(`Days: ${daysOrder === "desc" ? "Longest" : "Fastest"}`);
+
+    setStatus(msg.length > 0 ? `Applied: ${msg.join(' | ')}` : "Filters applied.", "success");
   } else {
-    setStatus("Navigate to a MAL anime list page to use live filters.", "error");
+    setStatus("Navigate to a MAL anime list page to use live controls.", "error");
   }
 }
 
-async function clearLiveScoreFilter() {
+async function clearLiveControls() {
   elements.pageScoreInput.value = "";
+  elements.SortOrder.value = "";
+  elements.RewatchedInput.value = "";
+
   const tab = await getActiveTab();
   if (tab && isMalAnimelistTab(tab)) {
-    chrome.tabs.sendMessage(tab.id, { action: "filterScore", score: null });
-    setStatus("Live filters cleared.", "info");
-  }
-}
-
-// ── Live Page Sorting by Days ───────────────────────────────────────
-
-async function applyLiveDaysSort() {
-  const order = elements.pageSortOrder.value;
-  const tab = await getActiveTab();
-  if (tab && isMalAnimelistTab(tab)) {
-    chrome.tabs.sendMessage(tab.id, { action: "sortDays", order });
-    setStatus(`Live page sorted by days (${order === "desc" ? "Longest" : "Fastest"} first).`, "success");
-  } else {
-    setStatus("Navigate to a MAL anime list page to use live sorting.", "error");
-  }
-}
-
-async function clearLiveDaysSort() {
-  const tab = await getActiveTab();
-  if (tab && isMalAnimelistTab(tab)) {
-    chrome.tabs.sendMessage(tab.id, { action: "sortDays", order: null });
-    setStatus("Live sorting cleared.", "info");
+    chrome.tabs.sendMessage(tab.id, {
+      action: "applyLiveControls",
+      score: null,
+      rewatchedFilter: null,
+      daysOrder: null
+    });
+    setStatus("Filter & Sort cleared.", "info");
   }
 }
 
@@ -510,12 +514,9 @@ async function clearLiveDaysSort() {
 function bindEvents() {
   elements.analyzeBtn.addEventListener("click", analyzeCurrentTab);
   elements.downloadBtn.addEventListener("click", downloadReport);
-  
-  elements.applyScoreBtn.addEventListener("click", applyLiveScoreFilter);
-  elements.clearScoreBtn.addEventListener("click", clearLiveScoreFilter);
-  
-  elements.applyDaysSortBtn.addEventListener("click", applyLiveDaysSort);
-  elements.clearDaysSortBtn.addEventListener("click", clearLiveDaysSort);
+
+  elements.applyLiveControlsBtn.addEventListener("click", applyLiveControls);
+  elements.clearLiveControlsBtn.addEventListener("click", clearLiveControls);
 
   elements.minGapInput.addEventListener("input", () => {
     if (state.rawGaps.length > 0) {

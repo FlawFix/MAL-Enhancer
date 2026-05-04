@@ -399,14 +399,50 @@ pre:empty {
   letter-spacing: -0.2px;
 }
 
-/* ── Live Page Filters ──────────────────────────────────── */
+/* ── Live Page Controls ─────────────────────────────────── */
 
-#live-filters,
-#live-sorting {
+#filter-sort {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   margin-bottom: 12px;
+}
+
+.controls-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.control-grid-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.control-grid-item label {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.control-grid-item input,
+.control-grid-item select {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius);
+  color: var(--text-body);
+  padding: 6px 8px;
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.2s;
+  width: 100%;
+}
+
+.control-grid-item input:focus,
+.control-grid-item select:focus {
+  border-color: var(--accent);
 }
 
 .filter-actions-row {

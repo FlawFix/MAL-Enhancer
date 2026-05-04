@@ -48,9 +48,13 @@
   window.addEventListener("scroll", updateVisibility, { passive: true });
   updateVisibility();
 
-  // ── Score Filtering Logic ────────────────────────────────────────
+  // ── Live Controls Logic ────────────────────────────────────────
 
   let activeScoreFilter = null;
+  let activeRewatchedFilter = null;
+  let activeSortType = null; // 'days' | null
+  let activeSortOrder = null; // 'asc' | 'desc' | null
+
   const ROW_SELECTORS = ".list-table-data .list-table-row, .list-table-data, table.list-table tbody tr, #list-container .list-item";
 
   function getMovableNode(row) {
@@ -85,53 +89,28 @@
     return validMovableNodes;
   }
 
+  // Gets the movable node AND its immediate .more-info siblings so they don't tear apart when re-ordered
+  function getGrouping(movable) {
+    const group = [movable];
+    if (movable.tagName === "TR") {
+      let next = movable.nextElementSibling;
+      while (next && (next.classList.contains("more-info") || (next.id && next.id.startsWith("more-")))) {
+        group.push(next);
+        next = next.nextElementSibling;
+      }
+    }
+    return group;
+  }
+
+  // Evaluators
   function getRowScore(row) {
-    // Attempt to extract the text score
     const scoreElem = row.querySelector(".data.score, td.score, .score-label, .score .link");
     if (!scoreElem) return 0;
-    
     const text = (scoreElem.textContent || "").trim();
     if (text === "-" || text === "N/A" || text === "") return 0;
-    
     const parsed = parseInt(text, 10);
     return Number.isNaN(parsed) ? 0 : parsed;
   }
-
-  let isUpdating = false;
-
-  function applyFilterToAll() {
-    if (isUpdating) return;
-    isUpdating = true;
-    try {
-      const rows = getValidRows();
-      
-      // Phase 1: Read all scores (prevent layout thrashing)
-      const rowsData = rows.map(row => ({
-        row,
-        score: getRowScore(row)
-      }));
-
-      // Phase 2: Write all styles and update counters
-      let visibleCount = 0;
-      rowsData.forEach(({ row, score }) => {
-        const isVisible = activeScoreFilter === null || score === activeScoreFilter;
-        row.style.display = isVisible ? "" : "none";
-        
-        // Update numbering for visible rows sequentially
-        if (isVisible) {
-          visibleCount++;
-          const numberCell = row.querySelector(".data.number, td.number, .number, .list-table-data .data.number");
-          if (numberCell && numberCell.textContent != visibleCount) {
-            numberCell.textContent = visibleCount;
-          }
-        }
-      });
-    } finally {
-      setTimeout(() => { isUpdating = false; }, 0);
-    }
-  }
-
-  // ── Days Sorting Logic ──────────────────────────────────────────
 
   function parseDateSnippet(dateStr) {
     if (!dateStr || dateStr === "-" || dateStr === "N/A" || dateStr === "") return null;
@@ -151,72 +130,41 @@
     const startedElem = row.querySelector(".data.started, td.started");
     const finishedElem = row.querySelector(".data.finished, td.finished");
     if (!startedElem || !finishedElem) return -1;
-
     const start = parseDateSnippet(startedElem.textContent);
     const finish = parseDateSnippet(finishedElem.textContent);
     if (!start || !finish) return -1;
-
     const MS_PER_DAY = 1000 * 60 * 60 * 24;
     return Math.max(Math.round((finish - start) / MS_PER_DAY), 0);
   }
 
-  let originalOrderArray = [];
-
-  function applySortDays(order) {
-    const rows = getValidRows();
-    
-    const sortable = rows.map(row => ({
-      movable: row,
-      days: getRowDaysToComplete(row)
-    }));
-
-    if (originalOrderArray.length === 0 && sortable.length > 0) {
-      originalOrderArray = sortable.map(item => item.movable);
+  function getRowRewatched(movable) {
+    let moreInfoNode = null;
+    if (movable.tagName === 'TBODY') {
+      moreInfoNode = movable.querySelector('.more-info, [id^="more-"]');
+    } else {
+      let next = movable.nextElementSibling;
+      while (next && !next.classList.contains('list-table-data')) {
+        if (next.classList.contains('more-info') || (next.id && next.id.startsWith('more-'))) {
+          moreInfoNode = next;
+          break;
+        }
+        next = next.nextElementSibling;
+      }
     }
+    if (!moreInfoNode) return 0;
 
-    if (order === null) {
-      originalOrderArray.forEach(movable => {
-        if (movable.parentNode) movable.parentNode.appendChild(movable);
-      });
-      applyFilterToAll();
-      return;
-    }
-
-    sortable.sort((a, b) => {
-      if (a.days === -1 && b.days === -1) return 0;
-      if (a.days === -1) return 1;
-      if (b.days === -1) return -1;
-      return order === "desc" ? b.days - a.days : a.days - b.days;
-    });
-
-    sortable.forEach(item => {
-       const parent = item.movable.parentNode;
-       if (parent) parent.appendChild(item.movable);
-    });
-
-    applyFilterToAll(); // re-evaluates indices
+    const textMatch = moreInfoNode.textContent.match(/re-watched\s+(\d+)\s+times/i);
+    if (textMatch) return parseInt(textMatch[1], 10);
+    return 0;
   }
 
-  // Listen for popup messages
-  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    if (request.action === "filterScore") {
-      activeScoreFilter = request.score; // Integer or null
-      applyFilterToAll();
-      sendResponse({ status: "ok" });
-    } else if (request.action === "sortDays") {
-      applySortDays(request.order);
-      sendResponse({ status: "ok" });
-    }
-  });
+  // ── MutationObserver (declared early so rewatch preloading can pause it) ──
 
-  // Observe dynamically loaded rows (infinite scroll)
   const observer = new MutationObserver((mutations) => {
-    if (activeScoreFilter === null || isUpdating) return;
+    if ((activeScoreFilter === null && activeRewatchedFilter === null && activeSortType === null) || isUpdating) return;
     
-    // Re-apply filter if structural changes occur on the list
     let shouldUpdate = false;
     for (const mutation of mutations) {
-      // Only care about actual elements, to ignore text node changes
       const hasAddedElements = Array.from(mutation.addedNodes).some(n => n.nodeType === Node.ELEMENT_NODE);
       if (hasAddedElements) {
         shouldUpdate = true;
@@ -224,11 +172,273 @@
       }
     }
     if (shouldUpdate) {
-      applyFilterToAll();
+      applyLiveControls();
     }
   });
-  
-  // Attach observer to a robust parent
+
+  // ── Rewatch Data Preloading ──────────────────────────────────────
+
+  let rewatchDataLoaded = false;
+  let rewatchDataLoading = false;
+
+  function createProgressIndicator() {
+    let indicator = document.getElementById('mal-gap-rewatch-progress');
+    if (indicator) return indicator;
+
+    indicator = document.createElement('div');
+    indicator.id = 'mal-gap-rewatch-progress';
+    indicator.style.cssText = `
+      position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+      z-index: 99999; padding: 10px 22px; border-radius: 8px;
+      background: rgba(20, 25, 35, 0.95); color: #00e5ff;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 13px; font-weight: 500; letter-spacing: 0.3px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.4), 0 0 12px rgba(0,229,255,0.15);
+      border: 1px solid rgba(0,229,255,0.25);
+      backdrop-filter: blur(8px); transition: opacity 0.3s ease;
+    `;
+    document.body.appendChild(indicator);
+    return indicator;
+  }
+
+  function removeProgressIndicator() {
+    const indicator = document.getElementById('mal-gap-rewatch-progress');
+    if (indicator) {
+      indicator.style.opacity = '0';
+      setTimeout(() => indicator.remove(), 300);
+    }
+  }
+
+  function waitForMoreContent(moreInfoRow, timeoutMs = 5000) {
+    return new Promise((resolve) => {
+      const contentCell = moreInfoRow.querySelector('.more-content, td');
+      if (contentCell && contentCell.textContent.trim().length > 10) {
+        resolve(true);
+        return;
+      }
+
+      const startTime = Date.now();
+      const check = setInterval(() => {
+        const cell = moreInfoRow.querySelector('.more-content, td');
+        if (cell && cell.textContent.trim().length > 10) {
+          clearInterval(check);
+          resolve(true);
+        } else if (Date.now() - startTime > timeoutMs) {
+          clearInterval(check);
+          resolve(false);
+        }
+      }, 100);
+    });
+  }
+
+  async function loadAllRewatchData() {
+    if (rewatchDataLoaded || rewatchDataLoading) return;
+    rewatchDataLoading = true;
+
+    // Pause the MutationObserver during loading to prevent re-entrant filter calls
+    observer.disconnect();
+
+    // Find all "More" links — they sit inside <span class="more"> next to the anime title
+    const actualMoreLinks = [];
+    document.querySelectorAll('.list-table-data .more a, .list-table-data a').forEach(link => {
+      const text = link.textContent.trim();
+      if (text === 'More') {
+        actualMoreLinks.push(link);
+      }
+    });
+
+    // Broader fallback for other list layouts
+    if (actualMoreLinks.length === 0) {
+      document.querySelectorAll('#list-container a, .list-block a').forEach(link => {
+        const text = link.textContent.trim();
+        if (text === 'More') {
+          actualMoreLinks.push(link);
+        }
+      });
+    }
+
+    if (actualMoreLinks.length === 0) {
+      rewatchDataLoaded = true;
+      rewatchDataLoading = false;
+      reconnectObserver();
+      return;
+    }
+
+    // Filter to only entries whose more-info content hasn't loaded yet
+    const unloadedLinks = actualMoreLinks.filter(link => {
+      const row = link.closest('tr, .list-table-data');
+      if (!row) return true;
+      const moreInfoRow = findMoreInfoRow(row);
+      if (!moreInfoRow) return true;
+      const content = moreInfoRow.querySelector('.more-content, td');
+      return !content || content.textContent.trim().length < 10;
+    });
+
+    if (unloadedLinks.length === 0) {
+      rewatchDataLoaded = true;
+      rewatchDataLoading = false;
+      reconnectObserver();
+      return;
+    }
+
+    const indicator = createProgressIndicator();
+    const total = unloadedLinks.length;
+
+    for (let i = 0; i < unloadedLinks.length; i++) {
+      indicator.textContent = `Loading rewatch data… (${i + 1}/${total})`;
+
+      const link = unloadedLinks[i];
+
+      // Click to open — triggers AJAX load
+      link.click();
+
+      // Wait for the AJAX content to populate
+      const row = link.closest('tr, .list-table-data');
+      if (row) {
+        const moreInfoRow = findMoreInfoRow(row);
+        if (moreInfoRow) {
+          await waitForMoreContent(moreInfoRow);
+          // Click again to collapse — data stays in DOM but row is hidden
+          link.click();
+        }
+      }
+
+      // Small delay to avoid overwhelming the server
+      if (i < unloadedLinks.length - 1) {
+        await new Promise(r => setTimeout(r, 80));
+      }
+    }
+
+    indicator.textContent = 'Rewatch data loaded ✓';
+    setTimeout(() => removeProgressIndicator(), 1200);
+
+    rewatchDataLoaded = true;
+    rewatchDataLoading = false;
+    reconnectObserver();
+  }
+
+  // Helper: find the more-info row adjacent to a given entry row
+  function findMoreInfoRow(row) {
+    if (row.tagName === 'TR') {
+      let next = row.nextElementSibling;
+      while (next) {
+        if (next.classList.contains('more-info') || (next.id && next.id.startsWith('more-'))) {
+          return next;
+        }
+        if (next.classList.contains('list-table-data')) break;
+        next = next.nextElementSibling;
+      }
+    }
+    return null;
+  }
+
+  // Helper: reconnect the MutationObserver after loading completes
+  function reconnectObserver() {
+    const container = document.querySelector("#list-container, .list-block") || document.body;
+    if (container) {
+      observer.observe(container, { childList: true, subtree: true });
+    }
+  }
+
+  // ── Core Filter & Sort Logic ────────────────────────────────────
+
+  let isUpdating = false;
+  let originalOrderArray = [];
+
+  function executeFilterAndSort() {
+    const rows = getValidRows();
+    
+    const sortable = rows.map(row => ({
+      movable: row,
+      group: getGrouping(row),
+      score: getRowScore(row),
+      days: getRowDaysToComplete(row),
+      rewatched: getRowRewatched(row)
+    }));
+
+    // Cache original order if not done already
+    if (originalOrderArray.length === 0 && sortable.length > 0) {
+      originalOrderArray = sortable.map(item => item.movable);
+    }
+
+    // Step 1: Sorting
+    if (activeSortType === null) {
+      // Restore original HTML order
+      originalOrderArray.forEach(movable => {
+        const item = sortable.find(s => s.movable === movable);
+        if (item && movable.parentNode) {
+          item.group.forEach(n => movable.parentNode.appendChild(n));
+        }
+      });
+    } else {
+      sortable.sort((a, b) => {
+        if (a.days === -1 && b.days === -1) return 0;
+        if (a.days === -1) return 1;
+        if (b.days === -1) return -1;
+        return activeSortOrder === "desc" ? b.days - a.days : a.days - b.days;
+      });
+      
+      sortable.forEach(item => {
+         const parent = item.movable.parentNode;
+         if (parent) item.group.forEach(n => parent.appendChild(n));
+      });
+    }
+
+    // Step 2: Filtering
+    let visibleCount = 0;
+    sortable.forEach(({ group, score, rewatched }) => {
+      const scoreMatch = activeScoreFilter === null || score === activeScoreFilter;
+      const rewatchedMatch = activeRewatchedFilter === null || rewatched === activeRewatchedFilter;
+      const isVisible = scoreMatch && rewatchedMatch;
+      group.forEach(node => { node.style.display = isVisible ? "" : "none"; });
+      
+      if (isVisible) {
+        visibleCount++;
+        const numberCell = group[0].querySelector(".data.number, td.number, .number, .list-table-data .data.number");
+        if (numberCell && numberCell.textContent != visibleCount) {
+           numberCell.textContent = visibleCount;
+        }
+      }
+    });
+  }
+
+  async function applyLiveControls() {
+    if (isUpdating) return;
+    isUpdating = true;
+    try {
+      // If rewatched filter is active, preload all rewatch data first
+      if (activeRewatchedFilter !== null && !rewatchDataLoaded) {
+        await loadAllRewatchData();
+      }
+      executeFilterAndSort();
+    } finally {
+      setTimeout(() => { isUpdating = false; }, 0);
+    }
+  }
+
+  // Listen for popup messages
+  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === "applyLiveControls") {
+      activeScoreFilter = request.score;
+      activeRewatchedFilter = request.rewatchedFilter;
+      
+      if (request.daysOrder) {
+        activeSortType = "days";
+        activeSortOrder = request.daysOrder;
+      } else {
+        activeSortType = null;
+        activeSortOrder = null;
+      }
+
+      // Use async flow — sendResponse kept alive with return true
+      applyLiveControls().then(() => {
+        sendResponse({ status: "ok" });
+      });
+      return true; // Keep message channel open for async response
+    }
+  });
+
+  // Start observing for infinite scroll / dynamic row loading
   const listContainer = document.querySelector("#list-container, .list-block") || document.body;
   if (listContainer) {
     observer.observe(listContainer, { childList: true, subtree: true });
